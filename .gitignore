@@ -15,6 +15,9 @@ venv/
 .idea/
 .vscode/
 
+# Claude Code
+.omc/
+
 # Logs
 *.log
 
