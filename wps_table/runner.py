@@ -26,6 +26,8 @@ def run(base_dir: str) -> None:
         logger.info("获取 Schema...")
         result = api.get_schema(file_id)
         logger.info(result)
+        records = api.get_records(file_id, sheet_name="测试表")
+        logger.info(records)
     except WPSAPIError as exc:
         logger.error({
             "message": str(exc),
