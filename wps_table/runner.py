@@ -1,6 +1,6 @@
 from loguru import logger
 
-from .api import WPS365DBSheetAPI
+from .api import WPS365DBSheetAPI, WPSAPIError
 from .config import load_settings
 
 
@@ -22,6 +22,13 @@ def run(base_dir: str) -> None:
         logger.error("请先设置环境变量 WPS_FILE_ID")
         return
 
-    logger.info("获取 Schema...")
-    result = api.get_schema(file_id)
-    logger.info(result)
+    try:
+        logger.info("获取 Schema...")
+        result = api.get_schema(file_id)
+        logger.info(result)
+    except WPSAPIError as exc:
+        logger.error({
+            "message": str(exc),
+            "status_code": exc.status_code,
+            "payload": exc.payload,
+        })

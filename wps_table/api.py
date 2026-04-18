@@ -9,6 +9,13 @@ import requests
 from loguru import logger
 
 
+class WPSAPIError(Exception):
+    def __init__(self, message: str, *, status_code: Optional[int] = None, payload: Any = None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.payload = payload
+
+
 class WPS365DBSheetAPI:
     """WPS 365 多维表格 API 封装"""
 
@@ -31,21 +38,28 @@ class WPS365DBSheetAPI:
         if self.access_token:
             return self.access_token
 
-        response = requests.post(
-            f"{self.base_url}/oauth2/token",
-            data={
-                "grant_type": "client_credentials",
-                "client_id": self.client_id,
-                "client_secret": self.client_secret,
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            timeout=self.timeout,
-        )
+        try:
+            response = requests.post(
+                f"{self.base_url}/oauth2/token",
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": self.client_id,
+                    "client_secret": self.client_secret,
+                },
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=self.timeout,
+            )
+        except requests.RequestException as exc:
+            raise WPSAPIError("获取 access_token 请求失败") from exc
+
         logger.info(f"应用授权获取 token 响应状态: {response.status_code}")
-        result = response.json()
+        try:
+            result = response.json()
+        except ValueError as exc:
+            raise WPSAPIError("获取 access_token 响应不是合法 JSON", status_code=response.status_code) from exc
         self.access_token = result.get("access_token")
         if not self.access_token:
-            raise ValueError(f"应用授权获取 access_token 失败: {result}")
+            raise WPSAPIError("应用授权获取 access_token 失败", status_code=response.status_code, payload=result)
         return self.access_token
 
     def _build_url(self, path: str) -> str:
@@ -54,15 +68,13 @@ class WPS365DBSheetAPI:
     def _generate_kso1_signature(self, method: str, path: str, date_str: str, body: str = "") -> str:
         sha256_hex = hashlib.sha256(body.encode("utf-8")).hexdigest() if body else ""
         sign_string = f"KSO-1{method}{path}application/json{date_str}{sha256_hex}"
-        logger.info(f"签名原串: {sign_string}")
+        logger.debug(f"签名请求: {method} {path}")
         signature_hex = hmac.new(
             self.app_secret.encode("utf-8"),
             sign_string.encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()
-        kso1_auth = f"KSO-1 {self.app_id}:{signature_hex}"
-        logger.info(f"KSO-1签名: {kso1_auth}")
-        return kso1_auth
+        return f"KSO-1 {self.app_id}:{signature_hex}"
 
     def _get_headers(self, method: str = "GET", path: str = "", body: str = "") -> Dict[str, str]:
         if not self.access_token:
@@ -102,26 +114,34 @@ class WPS365DBSheetAPI:
         if files:
             headers.pop("Content-Type", None)
 
-        response = requests.request(
-            request_method,
-            self._build_url(path),
-            headers=headers,
-            params=params,
-            json=json_data,
-            data=raw_body if raw_body else data,
-            files=files,
-            timeout=self.timeout,
-        )
+        try:
+            response = requests.request(
+                request_method,
+                self._build_url(path),
+                headers=headers,
+                params=params,
+                json=json_data,
+                data=raw_body if raw_body else data,
+                files=files,
+                timeout=self.timeout,
+            )
+        except requests.RequestException as exc:
+            raise WPSAPIError(f"请求失败: {request_method} {path}") from exc
+
         logger.info(f"{request_method} {signed_path} -> {response.status_code}")
 
         try:
             result = response.json()
         except ValueError:
-            return {"error": f"HTTP {response.status_code}", "message": response.text}
+            result = response.text
 
-        if response.status_code != 200:
-            return {"error": f"HTTP {response.status_code}", "message": result}
-        return result
+        if response.status_code < 200 or response.status_code >= 300:
+            raise WPSAPIError(
+                f"接口请求失败: {request_method} {path}",
+                status_code=response.status_code,
+                payload=result,
+            )
+        return result if isinstance(result, dict) else {"data": result}
 
     def get_sheet_id_by_name(self, file_id: str, sheet_name: str) -> Optional[str]:
         schema = self.get_schema(file_id)
